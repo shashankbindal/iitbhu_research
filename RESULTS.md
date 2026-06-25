@@ -42,6 +42,25 @@ variance; the consistent finding is R_θ < raw, and R_θ < RT-Focuser.)
   to help most on real photos, where R_θ's training signal comes from the actual
   target distribution.
 
+## Phase 0 — metric sanity check (confirmed)
+
+Metric confirmed correct; `word_acc=0` is a **genuine model limitation** at this
+training stage, not a metric artifact. Verified by `debug_eval_sanity.py`, which
+prints `repr()` of GT vs raw-OCR vs R_θ-OCR for all 8 held-out samples:
+
+- `word_acc` is **exact full-string match** after normalization. GTs are long
+  multi-word labels; even R_θ's best output (CER 0.11) still has character errors,
+  so exact match is 0 — expected, not a bug. Normalization is applied and not
+  masking any true match.
+- WER rising (0.786→0.856) while CER falls (0.582→0.455) is **real**: restoration
+  makes OCR emit more (and sometimes garbled) word tokens, which lowers character
+  error but can raise word-level error. Confirmed by inspecting the strings.
+- **CER is the reliable readability metric here**; `word_acc` is too stringent for
+  multi-word labels and `WER` is confounded by segmentation. Use CER as primary.
+
+R_θ genuinely improves CER per-sample (e.g. raw `784 8 Ta 277880` → R_θ
+`FAFACETAMOL 500-g …` for GT `PARACETAMOL 500mg …`).
+
 ## Artifacts
 
 - `checkpoints/r_theta_w48_stage1.pth` — trained weights (1.79 MB)
