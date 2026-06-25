@@ -36,8 +36,19 @@ def export(ckpt_path, out_path, opset=17):
                       "output": {0: "batch", 2: "height", 3: "width"}},
         opset_version=opset,
     )
+
+    # The torch 2.x dynamo exporter may split weights into a `.onnx.data` sidecar.
+    # The browser demo (onnxruntime-web) expects ONE self-contained file, so
+    # re-save with all tensors inlined and remove the sidecar.
+    import onnx
+    m = onnx.load(out_path)                       # pulls external data into memory
+    onnx.save_model(m, out_path, save_as_external_data=False)
+    sidecar = out_path + ".data"
+    if os.path.exists(sidecar):
+        os.remove(sidecar)
+
     size_mb = os.path.getsize(out_path) / 1e6
-    print(f"exported {out_path}  (width={width}, {size_mb:.2f} MB, opset {opset})")
+    print(f"exported {out_path}  (width={width}, {size_mb:.2f} MB, opset {opset}, self-contained)")
     return model, width
 
 
