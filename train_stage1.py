@@ -77,34 +77,49 @@ def train(args):
     print(f"R_theta width={args.width}  params={count_params(model)/1e6:.2f}M")
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     ds = SyntheticTextPairs(length=args.iters * args.batch,
                             crop=(args.crop[0], args.crop[1]), seed=0)
     loader = torch.utils.data.DataLoader(
         ds, batch_size=args.batch, shuffle=True,
-        num_workers=args.workers, pin_memory=use_amp, drop_last=True)
-
-    model.train()
-    running = 0.0
-    for it, (deg, sharp) in enumerate(itertools.islice(loader, args.iters), 1):
-        deg, sharp = deg.to(device), sharp.to(device)
-        opt.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            pred = model(deg)
-            loss = restoration_loss(pred, sharp, args.lambda_edge)
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
-        running += loss.item()
-        if it % args.log_every == 0:
-            print(f"  iter {it:6d}/{args.iters}  loss {running/args.log_every:.4f}")
-            running = 0.0
+        num_workers=args.workers, pin_memory=use_amp, drop_last=True,
+        persistent_workers=(args.workers > 0))
 
     os.makedirs(args.out, exist_ok=True)
     ckpt = os.path.join(args.out, f"r_theta_w{args.width}_stage1.pth")
-    torch.save({"model": model.state_dict(), "width": args.width}, ckpt)
-    print("saved", ckpt)
+
+    def save(it):
+        torch.save({"model": model.state_dict(), "width": args.width, "iters": it}, ckpt)
+
+    model.train()
+    running, last_it = 0.0, 0
+    # Crash-resilient: Windows DataLoader can hit shared-memory limits late in a
+    # run (error 1455). If anything in the loop fails, we still save the
+    # already-trained model and proceed to eval rather than losing everything.
+    try:
+        for it, (deg, sharp) in enumerate(itertools.islice(loader, args.iters), 1):
+            deg, sharp = deg.to(device), sharp.to(device)
+            opt.zero_grad(set_to_none=True)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                pred = model(deg)
+                loss = restoration_loss(pred, sharp, args.lambda_edge)
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+            running += loss.item()
+            last_it = it
+            if it % args.log_every == 0:
+                print(f"  iter {it:6d}/{args.iters}  loss {running/args.log_every:.4f}", flush=True)
+                running = 0.0
+            if it % args.ckpt_every == 0:
+                save(it)
+                print(f"  [checkpoint @ {it}]", flush=True)
+    except Exception as e:
+        print(f"\nWARNING: training loop stopped at iter {last_it}: {type(e).__name__}: {e}", flush=True)
+
+    save(last_it)
+    print(f"saved {ckpt} (trained {last_it} iters)", flush=True)
     return model, device
 
 
@@ -135,6 +150,7 @@ def main():
     p.add_argument("--lambda_edge", type=float, default=0.5)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--log_every", type=int, default=50)
+    p.add_argument("--ckpt_every", type=int, default=2500)
     p.add_argument("--eval_n", type=int, default=6)
     p.add_argument("--no_eval", action="store_true")
     p.add_argument("--out", type=str, default="checkpoints")
