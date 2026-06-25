@@ -13,8 +13,24 @@ lightweight restoration network to make text in blind-captured images readable,
 | Data/eval | `ocr.py` frozen-OCR wrapper (EasyOCR) | done, tested |
 | Data/eval | `data_vizwiz.py` VizWiz loader + text filter | done, logic tested |
 | Data/eval | `evaluate.py` pluggable restoration harness | done, baseline numbers produced |
-| Stage 1 | synthetic supervised pre-training of `R_theta` | not started |
+| Stage 1 | `model.py` R_theta lightweight U-Net (0.44M params @ width 48) | done, tested |
+| Stage 1 | `dataset.py` on-the-fly synthetic text-crop pairs | done, tested |
+| Stage 1 | `train_stage1.py` supervised pre-train (AMP, device-agnostic) | done, loop verified |
+| Stage 1 | `verify_capability.py` overfit capability check | **passed: OCR CER 0.862 -> 0.065** |
+| Stage 1 | full GPU pre-training run | pending (needs CUDA machine) |
 | Stage 2 | label-free adaptation on VizWiz (`L_conf`, `L_reblur`, `L_content`, `L_vqa`) | not started |
+
+### Capability check (CPU, `verify_capability.py`)
+
+Overfitting 4 fixed motion-blurred label images (width=32, 800 steps) takes
+OCR-unreadable text back to readable — a **proof the architecture can do the
+task** before spending GPU time (this is overfit, NOT generalization):
+
+| | degraded OCR | restored OCR |
+|---|---|---|
+| mean CER over 4 images | 0.862 | **0.065** |
+
+`PARACETAMOL 500mg` → degraded reads `#abauaiana #xmi`, restored reads `PARACETAMOL 50Omg`.
 
 ## Current baseline (synthetic eval set, EasyOCR, CPU)
 
@@ -46,10 +62,18 @@ EasyOCR OpenMP conflict). GPU: install the CUDA torch build (see `requirements.t
 load it and pass `restore_fn = lambda x: model(x)` alongside `identity` (raw) and
 the RT-Focuser baseline — same data, same OCR, directly comparable.
 
+## Run Stage 1
+
+```bash
+python train_stage1.py --smoke                       # CPU loop check (~min)
+python verify_capability.py                          # overfit capability proof
+python train_stage1.py --width 48 --iters 60000 --batch 32   # full run (GPU)
+```
+
 ## Next
 
-1. **Stage 1** — `train_stage1.py`: supervised pre-train `R_theta` on synthetic
-   `degrade()` pairs (we have GT). Device-agnostic, AMP, text-crop batches for 6GB.
+1. **Full Stage-1 GPU run** on the RTX 3050 — `train_stage1.py --width 48`,
+   tens of thousands of iters, to get a *generalizing* pre-trained `R_theta`.
+   Then plug it into `evaluate.py` for the raw / RT-Focuser / ours / oracle table.
 2. **Stage 2** — `train_stage2.py`: label-free adaptation on VizWiz with the four
    losses; the differentiable recognizer (PARSeq/TrOCR) for `L_conf` lives here.
-3. Plug `R_theta` into `evaluate.py`; produce the raw / RT-Focuser / ours / oracle table.
