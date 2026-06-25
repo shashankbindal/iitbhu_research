@@ -61,6 +61,47 @@ prints `repr()` of GT vs raw-OCR vs R_θ-OCR for all 8 held-out samples:
 R_θ genuinely improves CER per-sample (e.g. raw `784 8 Ta 277880` → R_θ
 `FAFACETAMOL 500-g …` for GT `PARACETAMOL 500mg …`).
 
+## Phase 1 — real-photo smoke test: **R_θ is BROKEN on real photos (STOP gate hit)**
+
+Ran `smoke_test_real.py` on 8 real phone photos (receipts, signs, product boxes).
+**Verdict: R_θ output looks broken on real photos** — heavy artifacts, colour
+shift, destroyed text. This halts the plan before Phase 2, exactly as the Phase-1
+acceptance criterion specifies.
+
+Evidence:
+- **Visual:** a sharp, readable bag-shop card → R_θ output is washed to pale-blue
+  with dark smearing artifacts and the text destroyed.
+- **OCR (all 8 photos):** R_θ consistently *worsens* readability vs raw. E.g. the
+  bag sign — raw `Authorised Dealer SAFARI; ARISTOCRAT, SKYBAGS...` → R_θ
+  `77777hl Authotfec€ Dealer ARISTOCRAT ; Y,GS...`; the Voltas AC — raw reads a
+  full spec list → R_θ collapses to fragments.
+- **RT-Focuser, by contrast, preserves the images** (its OCR output ≈ raw, often
+  marginally better) — because it is a general deblurrer trained not to destroy
+  content.
+
+### Root cause
+
+The Stage-1 training distribution has a fundamental gap: `dataset.py` /
+`degrade.py` **always** apply aggressive degradation, so R_θ **never saw an
+already-sharp input** and never learned the identity/preservation mapping. Given
+a real, mostly-sharp, full-resolution colour photo, it over-processes (tries to
+"deblur" sharp content) and produces severe artifacts. It also only ever trained
+on 64×256 dark-text-on-light crops, so full-scale colour photos are out of
+distribution.
+
+### Required fix before any Config-B architecture work (Phases 3–5)
+
+Revisit the synthetic data pipeline, then retrain Stage 1:
+1. Include a substantial fraction (~30–50%) of **near-identity** samples (no / very
+   mild degradation, input ≈ target) so the model learns to leave readable content
+   alone.
+2. Add background/colour and scale diversity (not just dark-on-light text lines).
+3. Optionally add a small identity-preservation regulariser.
+
+Building the Config-B FiLM architecture on the current checkpoint would be
+investing in a broken foundation — the plan explicitly says to stop here. **Phases
+2–5 are paused pending this data-pipeline fix + Stage-1 retrain.**
+
 ## Artifacts
 
 - `checkpoints/r_theta_w48_stage1.pth` — trained weights (1.79 MB)
