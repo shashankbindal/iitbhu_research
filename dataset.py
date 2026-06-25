@@ -49,16 +49,30 @@ def _rand_token(rng):
     return "".join(rng.choice(list(chars)) for _ in range(n))
 
 
+def _bg_fg(rng):
+    """Pick (background BGR, foreground BGR) with adequate contrast. ~35% of the
+    time use a coloured background (matches real product/sign photos), else the
+    grayscale dark-on-light / light-on-dark used before."""
+    if rng.random() < 0.35:
+        bg = rng.integers(40, 230, size=3)
+        lum = 0.114 * bg[0] + 0.587 * bg[1] + 0.299 * bg[2]    # BGR luminance
+        base = int(rng.integers(10, 70)) if lum > 128 else int(rng.integers(190, 250))
+        fg = np.clip(base + rng.integers(-25, 25, size=3), 0, 255)
+        return [int(c) for c in bg], [int(c) for c in fg]
+    dark_on_light = rng.random() < 0.8
+    bgv = int(rng.integers(225, 252)) if dark_on_light else int(rng.integers(8, 45))
+    fgv = int(rng.integers(10, 55)) if dark_on_light else int(rng.integers(205, 250))
+    return [bgv] * 3, [fgv] * 3
+
+
 def _render_line(rng, w, h):
     """Render one sharp text line into an (h,w,3) BGR uint8 image."""
-    dark_on_light = rng.random() < 0.8
-    bg = int(rng.integers(225, 252)) if dark_on_light else int(rng.integers(8, 45))
-    fg = int(rng.integers(10, 55)) if dark_on_light else int(rng.integers(205, 250))
+    bg, fg = _bg_fg(rng)
     img = np.full((h, w, 3), bg, np.uint8)
 
     ntok = rng.integers(1, 5)
     text = " ".join(_rand_token(rng) for _ in range(ntok))
-    scale = float(rng.uniform(0.7, 1.2))
+    scale = float(rng.uniform(0.6, 1.4))      # wider scale range for size diversity
     thick = int(rng.integers(1, 3))
     font = rng.choice([cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX,
                        cv2.FONT_HERSHEY_COMPLEX])
@@ -69,7 +83,7 @@ def _render_line(rng, w, h):
         (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
     x = int(rng.integers(5, max(6, w - tw - 4)))
     y = int(h / 2 + th / 2)
-    cv2.putText(img, text, (x, y), font, scale, (fg, fg, fg), thick, cv2.LINE_AA)
+    cv2.putText(img, text, (x, y), font, scale, tuple(fg), thick, cv2.LINE_AA)
     return img
 
 
@@ -78,11 +92,29 @@ def _to_tensor(bgr):
     return torch.from_numpy(rgb).permute(2, 0, 1).contiguous()
 
 
+# Mild degradation for the "near-identity" fraction — teaches the model that a
+# nearly-sharp input should be left nearly untouched.
+MILD_CFG = DegradeConfig(
+    p_motion_blur=0.5, motion_len=(3, 7),
+    p_defocus=0.2, defocus_rad=(1, 2),
+    p_lowlight=0.0,
+    p_noise=0.3, noise_sigma=(2, 5),
+    p_jpeg=0.5, jpeg_quality=(60, 88),
+)
+
+
 class SyntheticTextPairs(Dataset):
-    def __init__(self, length=20000, crop=(64, 256), cfg: DegradeConfig = None, seed=0):
+    """(degraded, sharp) pairs. A `p_clean` fraction are near-identity samples
+    (exact-sharp or only mildly degraded) so the model learns to PRESERVE
+    already-readable content instead of over-processing it — without this the
+    model destroys real, mostly-sharp photos (see RESULTS.md Phase 1)."""
+
+    def __init__(self, length=20000, crop=(64, 256), cfg: DegradeConfig = None,
+                 p_clean=0.4, seed=0):
         self.length = length
         self.h, self.w = crop
         self.cfg = cfg or DegradeConfig()
+        self.p_clean = p_clean
         self.base_seed = seed
 
     def __len__(self):
@@ -91,7 +123,13 @@ class SyntheticTextPairs(Dataset):
     def __getitem__(self, idx):
         rng = np.random.default_rng(self.base_seed + idx)
         sharp = _render_line(rng, self.w, self.h)
-        deg = degrade(sharp, self.cfg, seed=int(rng.integers(0, 1_000_000)))
+        r = rng.random()
+        if r < self.p_clean * 0.5:
+            deg = sharp.copy()                                          # exact identity
+        elif r < self.p_clean:
+            deg = degrade(sharp, MILD_CFG, seed=int(rng.integers(0, 1_000_000)))   # mild
+        else:
+            deg = degrade(sharp, self.cfg, seed=int(rng.integers(0, 1_000_000)))   # full
         return _to_tensor(deg), _to_tensor(sharp)
 
 
