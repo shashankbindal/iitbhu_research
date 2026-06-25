@@ -1,0 +1,14 @@
+# Research module dependencies.
+#
+# IMPORTANT: install the CUDA build of torch on the GPU machine (RTX 3050) —
+# the default pip torch may be CPU-only. For CUDA 12.1:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# Verify with:  python -c "import torch; print(torch.cuda.is_available())"
+
+numpy>=1.24
+opencv-python>=4.8
+easyocr>=1.7          # frozen OCR for evaluation (detection + recognition)
+torch>=2.1            # install CUDA build separately, see note above
+torchvision>=0.16
+# pillow is pulled in by the above; add explicitly if needed:
+# pillow>=10.0

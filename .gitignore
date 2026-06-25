@@ -1,0 +1,18 @@
+# Generated / downloaded / heavy artifacts
+_selftest/
+data/
+checkpoints/
+*.pth
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS / IDE
+.vscode/
+.idea/
+.DS_Store
