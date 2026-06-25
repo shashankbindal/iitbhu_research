@@ -64,6 +64,33 @@ _STREAM_TEXTS = ["PARACETAMOL 500MG", "TAKE 1 TABLET DAILY", "EXP 08 2027",
                  "BATCH A5R5", "NET WT 250G", "BEST BEFORE 12 NOV"]
 
 
+def vizwiz_stream(images_dir, ann_path, batch, crop, seed=0):
+    """The REAL target: stream (image_batch, answers) from the VizWiz text subset.
+    No clean target — the image IS the real degraded photo; the consensus answer
+    is the weak L_vqa label. Images are resized to the recognition crop size.
+    Plug this in by passing --vizwiz_images/--vizwiz_ann."""
+    from data_vizwiz import load_annotations
+    samples = load_annotations(ann_path, images_dir, text_only=True, require_answerable=True)
+    if not samples:
+        raise RuntimeError(f"no text-subset samples found in {ann_path}")
+    print(f"VizWiz text subset: {len(samples)} samples")
+    h, w = crop
+    rng = np.random.default_rng(seed)
+    while True:
+        idxs = rng.integers(0, len(samples), size=batch)
+        imgs, texts = [], []
+        for i in idxs:
+            s = samples[int(i)]
+            bgr = cv2.imread(s.image_path)
+            if bgr is None:
+                continue
+            bgr = cv2.resize(bgr, (w, h))
+            imgs.append(_to_tensor(bgr))
+            texts.append(s.answer)
+        if imgs:
+            yield torch.stack(imgs), texts
+
+
 def _render_known(text, w, h):
     img = np.full((h, w, 3), 244, np.uint8)
     scale = 1.0
@@ -96,7 +123,11 @@ def train(args):
         rec.to(device)
 
     opt = torch.optim.Adam(list(R.parameters()) + list(reblur.parameters()), lr=args.lr)
-    stream = synthetic_stream(args.batch, tuple(args.crop), seed=0)   # real VizWiz loader plugs in here
+    if args.vizwiz_images and args.vizwiz_ann:
+        stream = vizwiz_stream(args.vizwiz_images, args.vizwiz_ann, args.batch, tuple(args.crop))
+    else:
+        print("no --vizwiz_images/--vizwiz_ann given: using synthetic degraded stream")
+        stream = synthetic_stream(args.batch, tuple(args.crop), seed=0)
 
     R.train()
     for it in range(1, args.iters + 1):
@@ -120,6 +151,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--recognizer", choices=["trocr", "tinycrnn"], default="trocr")
     p.add_argument("--init", type=str, default="")
+    p.add_argument("--vizwiz_images", type=str, default="", help="dir of VizWiz images")
+    p.add_argument("--vizwiz_ann", type=str, default="", help="VizWiz annotation .json")
     p.add_argument("--width", type=int, default=48)
     p.add_argument("--iters", type=int, default=20000)
     p.add_argument("--batch", type=int, default=16)
