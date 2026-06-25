@@ -10,5 +10,9 @@ opencv-python>=4.8
 easyocr>=1.7          # frozen OCR for evaluation (detection + recognition)
 torch>=2.1            # install CUDA build separately, see note above
 torchvision>=0.16
+transformers>=4.40    # TrOCR differentiable recognizer for Stage-2 L_conf/L_vqa (GPU)
+onnx>=1.15            # Stage-3 ONNX export
+onnxscript>=0.1       # required by torch.onnx.export in torch 2.x
+onnxruntime>=1.17     # ONNX export verification + RT-Focuser baseline in compare.py
 # pillow is pulled in by the above; add explicitly if needed:
 # pillow>=10.0

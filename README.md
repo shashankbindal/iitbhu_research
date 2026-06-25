@@ -18,7 +18,21 @@ lightweight restoration network to make text in blind-captured images readable,
 | Stage 1 | `train_stage1.py` supervised pre-train (AMP, device-agnostic) | done, loop verified |
 | Stage 1 | `verify_capability.py` overfit capability check | **passed: OCR CER 0.862 -> 0.065** |
 | Stage 1 | full GPU pre-training run | pending (needs CUDA machine) |
-| Stage 2 | label-free adaptation on VizWiz (`L_conf`, `L_reblur`, `L_content`, `L_vqa`) | not started |
+| Stage 2 | `recognizer.py` differentiable recognizer (TrOCR + TinyCRNN stand-in) | done, grad-flow tested |
+| Stage 2 | `losses_stage2.py` label-free objective (`L_conf`,`L_reblur`,`L_content`,`L_vqa`) | done, tested (no clean target) |
+| Stage 2 | `train_stage2.py` label-free adaptation loop | done, loop verified |
+| Stage 2 | full GPU run on real VizWiz with TrOCR | pending (needs CUDA + VizWiz) |
+| Stage 3 | `export_onnx.py` R_theta -> ONNX for the demo | done (diff 6e-08, dynamic shapes) |
+| Stage 3 | `compare.py` paper comparison table | done, harness verified |
+
+### Stage-2 machinery (CPU, no clean ground truth used anywhere)
+
+The label-free loop runs and trains `R_theta` from only: the degraded image, the
+frozen recognizer, and the weak text label. `L_reblur` already falls (0.055 ->
+0.010) as the reblur anchor learns. The recognizer signal (`L_conf`/`L_vqa`) is
+flat here only because the CPU smoke test uses a random stand-in; the real
+TrOCR provides the informative signal on GPU. This verifies the novel mechanism
+is correct before the GPU run.
 
 ### Capability check (CPU, `verify_capability.py`)
 
@@ -70,10 +84,22 @@ python verify_capability.py                          # overfit capability proof
 python train_stage1.py --width 48 --iters 60000 --batch 32   # full run (GPU)
 ```
 
-## Next
+## Run Stage 2 / 3
 
-1. **Full Stage-1 GPU run** on the RTX 3050 — `train_stage1.py --width 48`,
-   tens of thousands of iters, to get a *generalizing* pre-trained `R_theta`.
-   Then plug it into `evaluate.py` for the raw / RT-Focuser / ours / oracle table.
-2. **Stage 2** — `train_stage2.py`: label-free adaptation on VizWiz with the four
-   losses; the differentiable recognizer (PARSeq/TrOCR) for `L_conf` lives here.
+```bash
+python train_stage2.py --smoke                       # CPU machinery check
+# GPU: label-free adaptation with the real recognizer
+python train_stage2.py --recognizer trocr --init checkpoints/r_theta_w48_stage1.pth \
+    --width 48 --iters 20000 --batch 16
+python export_onnx.py --ckpt checkpoints/r_theta_w48_stage2.pth --out r_theta.onnx
+python compare.py --s1 ...stage1.pth --s2 ...stage2.pth --rtfocuser ../models/rt_focuser.onnx
+```
+
+## Next (all on the RTX 3050)
+
+1. **Full Stage-1 GPU run** — `train_stage1.py --width 48`, tens of thousands of
+   iters, for a *generalizing* pre-trained `R_theta`.
+2. **Download VizWiz** text subset; point `train_stage2.py`'s data stream at the
+   real loader (replacing `synthetic_stream`), run label-free adaptation with TrOCR.
+3. **`compare.py`** with trained S1/S2 + RT-Focuser -> the paper's headline table.
+4. **`export_onnx.py`** -> drop `r_theta.onnx` into the browser demo (`models/`).
