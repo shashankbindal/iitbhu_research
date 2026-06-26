@@ -96,6 +96,57 @@ class RestoreNet(nn.Module):
         return torch.clamp(x + residual, 0.0, 1.0)
 
 
+class RestoreNetConfigB(nn.Module):
+    """Config B — RestoreNet with Recognition-Guided FiLM at the bottleneck.
+
+    Same encoder/decoder as RestoreNet (Config A), plus a FiLMModulator that
+    conditions the bottleneck features on a FROZEN recognizer's view of the input.
+    Config A's RestoreNet class is left fully unmodified for a controlled
+    architecture-only comparison. The recognizer runs under no_grad (it only
+    produces the conditioning signal; it is not part of the loss at Stage 1), which
+    keeps memory close to Config A's.
+    """
+    def __init__(self, width=48, recognizer=None):
+        super().__init__()
+        from modulation import FiLMModulator
+        assert recognizer is not None, "Config B requires a frozen recognizer"
+        w = width
+        self.stem = nn.Conv2d(3, w, 3, padding=1)
+        self.enc1 = ResBlock(w)
+        self.down1 = Down(w, w * 2)
+        self.enc2 = ResBlock(w * 2)
+        self.down2 = Down(w * 2, w * 4)
+        self.mid = nn.Sequential(ResBlock(w * 4), ResBlock(w * 4))
+        self.up2 = Up(w * 4, w * 2)
+        self.dec2 = ResBlock(w * 2)
+        self.up1 = Up(w * 2, w)
+        self.dec1 = ResBlock(w)
+        self.head = nn.Conv2d(w, 3, 3, padding=1)
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
+
+        self.recognizer = recognizer                      # frozen, not optimised
+        self.film = FiLMModulator(recognizer.feat_channels(), w * 4)
+        self._last_film = (0.0, 0.0)                       # for gamma/beta logging
+
+    def forward(self, x):
+        from modulation import apply_film
+        s = self.stem(x)
+        e1 = self.enc1(s)
+        e2 = self.enc2(self.down1(e1))
+        m = self.mid(self.down2(e2))
+        # recognition-guided modulation of the bottleneck (single injection point)
+        with torch.no_grad():
+            rec_feat = self.recognizer.conv_features(x)
+        gamma, beta = self.film(rec_feat)
+        self._last_film = (gamma.detach().abs().mean().item(),
+                           beta.detach().abs().mean().item())
+        m = apply_film(m, gamma, beta)
+        d2 = self.dec2(self.up2(m) + e2)
+        d1 = self.dec1(self.up1(d2) + e1)
+        return torch.clamp(x + self.head(d1), 0.0, 1.0)
+
+
 def count_params(m):
     return sum(p.numel() for p in m.parameters())
 

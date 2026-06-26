@@ -73,10 +73,20 @@ def train(args):
     use_amp = (device == "cuda")
     print(f"device={device}  AMP={use_amp}")
 
-    model = RestoreNet(args.width).to(device)
-    print(f"R_theta width={args.width}  params={count_params(model)/1e6:.2f}M")
+    is_b = (args.config == "b")
+    if is_b:
+        from model import RestoreNetConfigB
+        from recognizer import get_recognizer
+        recognizer = get_recognizer("tinycrnn").to(device)
+        model = RestoreNetConfigB(args.width, recognizer).to(device)
+    else:
+        model = RestoreNet(args.width).to(device)
+    trainable = [p for p in model.parameters() if p.requires_grad]   # excludes frozen recognizer
+    print(f"Config {args.config.upper()}  width={args.width}  "
+          f"trainable params={sum(p.numel() for p in trainable)/1e6:.2f}M  "
+          f"total={count_params(model)/1e6:.2f}M")
 
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(trainable, lr=args.lr)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     ds = SyntheticTextPairs(length=args.iters * args.batch,
@@ -87,7 +97,8 @@ def train(args):
         persistent_workers=(args.workers > 0))
 
     os.makedirs(args.out, exist_ok=True)
-    ckpt = os.path.join(args.out, f"r_theta_w{args.width}_stage1.pth")
+    suffix = "_configB" if is_b else ""
+    ckpt = os.path.join(args.out, f"r_theta_w{args.width}_stage1{suffix}.pth")
 
     def save(it):
         torch.save({"model": model.state_dict(), "width": args.width, "iters": it}, ckpt)
@@ -110,7 +121,11 @@ def train(args):
             running += loss.item()
             last_it = it
             if it % args.log_every == 0:
-                print(f"  iter {it:6d}/{args.iters}  loss {running/args.log_every:.4f}", flush=True)
+                extra = ""
+                if is_b:
+                    g, b = model._last_film
+                    extra = f"  |gamma|={g:.4f} |beta|={b:.4f}"   # Phase-4 collapse check
+                print(f"  iter {it:6d}/{args.iters}  loss {running/args.log_every:.4f}{extra}", flush=True)
                 running = 0.0
             if it % args.ckpt_every == 0:
                 save(it)
@@ -142,6 +157,8 @@ def evaluate(model, device, n=6):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--config", choices=["a", "b"], default="a",
+                   help="a = RestoreNet (baseline); b = RestoreNet + recognition-guided FiLM")
     p.add_argument("--width", type=int, default=48)
     p.add_argument("--iters", type=int, default=60000)
     p.add_argument("--batch", type=int, default=32)

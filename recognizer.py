@@ -60,6 +60,7 @@ class TinyCRNN(Recognizer, nn.Module):
     def __init__(self, width=32, height=32):
         nn.Module.__init__(self)
         self.height = height
+        self.width = width
         c = width
         self.body = nn.Sequential(
             nn.Conv2d(3, c, 3, padding=1), nn.GELU(), nn.MaxPool2d(2),       # H/2
@@ -70,6 +71,21 @@ class TinyCRNN(Recognizer, nn.Module):
         self.head = nn.Conv2d(c * 4, VOCAB, 1)
         for p in self.parameters():
             p.requires_grad_(False)        # frozen recognizer
+
+    def feat_channels(self):
+        """Channel count of the conv feature map exposed by conv_features()."""
+        return self.width * 4
+
+    def conv_features(self, imgs):
+        """Config B — the spatial conv feature map BEFORE the height-collapse pool
+        and sequence flattening, used as the FiLM conditioning signal. Returns
+        (B, width*4, H/4, W')."""
+        x = F.interpolate(imgs, size=(self.height, imgs.shape[-1]),
+                          mode="bilinear", align_corners=False)
+        feat = x
+        for layer in self.body[:-1]:       # all layers except the final AdaptiveAvgPool
+            feat = layer(feat)
+        return feat
 
     def _logits(self, imgs):
         # resize to a fixed recognition height, keep width (text line aspect)
