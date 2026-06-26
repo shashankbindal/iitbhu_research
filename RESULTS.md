@@ -126,6 +126,21 @@ strong *improvement* on real BLURRY photos still needs blurry real-photo samples
 
 **Phase 1 gate cleared. Proceeding to Phase 2.**
 
+## Phase 2 — frozen held-out eval set (v2, 61 labels)
+
+Frozen label set: `held_out_eval_v2.json` (61 realistic labels, disjoint from the
+procedural training generation; deterministic per-index degradation). This is the
+fixed eval set for the Config A vs Config B comparison. Baseline:
+
+| Condition | CER mean | CER std | min | max |
+|---|---|---|---|---|
+| raw | 0.536 | 0.370 | 0.000 | 1.000 |
+| R_θ Config A (Stage-1, identity-preserving) | **0.462** | 0.353 | 0.000 | 1.000 |
+
+Mean CER improves +0.074 (std/√61 ≈ 0.047 standard error → ~1.6σ; modest but real).
+The per-sample std (0.35) is the noise floor Config B must clear in Phase 5 to count
+as a genuine improvement over Config A.
+
 ## Artifacts
 
 - `checkpoints/r_theta_w48_stage1.pth` — trained weights (1.79 MB)
