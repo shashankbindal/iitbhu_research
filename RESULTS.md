@@ -102,6 +102,30 @@ Building the Config-B FiLM architecture on the current checkpoint would be
 investing in a broken foundation — the plan explicitly says to stop here. **Phases
 2–5 are paused pending this data-pipeline fix + Stage-1 retrain.**
 
+### Phase 1 RE-TEST after fix: **PASSED** ✅
+
+Applied the fix (`dataset.py`: ~40% near-identity samples [20% exact-sharp, 20%
+mild] + ~35% coloured backgrounds + wider scale range), retrained Stage-1 (20k
+iters, same recipe), and re-ran `smoke_test_real.py` on the same 8 photos.
+
+**R_θ now preserves real photos** instead of destroying them:
+- Bag-shop card: visually identical to raw (was washed-out + smeared before).
+- OCR now tracks raw closely on all 8 photos, and is occasionally *cleaner*: e.g.
+  the Royal Cuisine receipt — `Bill: RC088507` (R_θ) vs `3ill; RCo88507` (raw),
+  timestamp `21:35:46` clean.
+- The old (broken) checkpoint is kept as `r_theta_w48_stage1_noident.pth` — this
+  before/after is a clean ablation for the paper ("identity-preservation samples
+  are necessary; without them the restorer destroys sharp inputs").
+
+Trade-off (honest): on synthetic *heavily-degraded* text, the new model improves
+CER less than the old one (0.582→0.529 vs the old 0.582→0.455) — it is less
+aggressive because it now also learned to leave sharp content alone. That is the
+correct trade: a deployable restorer must not destroy readable images. Demonstrating
+strong *improvement* on real BLURRY photos still needs blurry real-photo samples
+(the user's set is mostly sharp receipts/signs) — flagged for later.
+
+**Phase 1 gate cleared. Proceeding to Phase 2.**
+
 ## Artifacts
 
 - `checkpoints/r_theta_w48_stage1.pth` — trained weights (1.79 MB)
