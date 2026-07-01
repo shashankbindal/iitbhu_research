@@ -71,15 +71,32 @@ def freeze():
 
 
 def build():
-    """Deterministically render+degrade the frozen label set."""
+    """Deterministically render+degrade the frozen label set.
+    Returns [(degraded, sharp, gt_text), ...]."""
     spec = json.load(open(JSON))
     cfg = DegradeConfig()
     items = []
     for i, t in enumerate(spec["strings"]):
         sharp = render_label(t, spec["render"]["w"], spec["render"]["h"])
         deg = degrade(sharp, cfg, seed=spec["seed_base"] + i)   # fixed per-index
-        items.append((deg, t))
+        items.append((deg, sharp, t))
     return items
+
+
+def load_model(ckpt_path, device):
+    """Load a checkpoint as Config A (RestoreNet) or Config B (RestoreNetConfigB),
+    auto-detected from the presence of FiLM weights in the state dict."""
+    ck = torch.load(ckpt_path, map_location=device)
+    width = ck.get("width", 48)
+    sd = ck["model"]
+    if any(k.startswith("film.") for k in sd):
+        from model import RestoreNetConfigB
+        from recognizer import get_recognizer
+        model = RestoreNetConfigB(width, get_recognizer("tinycrnn").to(device)).to(device)
+    else:
+        model = RestoreNet(width).to(device)
+    model.load_state_dict(sd)
+    return model
 
 
 def stats(vals):
@@ -99,15 +116,12 @@ def main():
             return
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ck = torch.load(args.ckpt, map_location=device)
-    model = RestoreNet(ck.get("width", 48)).to(device)
-    model.load_state_dict(ck["model"])
-    restore = make_restore_fn(model, device)
+    restore = make_restore_fn(load_model(args.ckpt, device), device)
     ocr = get_ocr("easyocr", gpu=(device == "cuda"))
 
     items = build()
     raw_cers, res_cers = [], []
-    for deg, gt in items:
+    for deg, _sharp, gt in items:
         raw_cers.append(cer(ocr.read(deg).text, gt))
         res_cers.append(cer(ocr.read(restore(deg)).text, gt))
 

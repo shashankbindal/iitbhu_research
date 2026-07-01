@@ -6,6 +6,10 @@ checkpoints/
 *.pt
 *.onnx
 
+# Personal real-photo test images (privacy) + generated eval outputs
+real_photos/
+smoke_test_outputs/
+
 # Python
 __pycache__/
 *.pyc

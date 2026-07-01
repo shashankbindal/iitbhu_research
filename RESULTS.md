@@ -19,6 +19,13 @@ is better).
 in params and ~12× smaller on disk** — and this is Stage-1 only (no label-free
 VizWiz adaptation yet). R_θ closes ~50% of the raw→oracle headroom.
 
+> ⚠️ **Superseded for the deployable model.** These numbers are from the *pre-Phase-1*
+> (over-aggressive) checkpoint on the older, smaller synthetic set. The deployable,
+> identity-preserving checkpoint is evaluated rigorously on the frozen 61-label set in
+> **Phase 2 / Phase 5** below — there R_θ-A *ties* RT-Focuser on CER (0.462 vs 0.455)
+> and wins on size (13×) and on not destroying sharp photos. Treat the frozen-61
+> results as authoritative; this headline is kept for the before/after record.
+
 ## Held-out generalization (separate unseen label set)
 
 A second held-out eval (8 unseen label strings, harder degradation draw):
@@ -141,8 +148,75 @@ Mean CER improves +0.074 (std/√61 ≈ 0.047 standard error → ~1.6σ; modest 
 The per-sample std (0.35) is the noise floor Config B must clear in Phase 5 to count
 as a genuine improvement over Config A.
 
+## Phase 4 — Config B (recognition-guided FiLM) trains correctly ✅
+
+Config B = Config A + a FiLM bottleneck conditioned on a frozen recognizer's view
+of the input (`modulation.py`, `RestoreNetConfigB`). Zero-initialised so B ≡ A at
+the start; trained with the **identical** recipe, data, seed and iters as A's
+retrain (20k, batch 32, width 48) — the only difference is the architecture.
+
+| iter | Config A retrain loss | Config B loss | Config B \|γ\| | Config B \|β\| |
+|---|---|---|---|---|
+| 1000 | 0.122 | 0.122 | 0.037 | 0.012 |
+| 4000 | 0.112 | 0.112 | 0.175 | 0.028 |
+| 8000 | ~0.094 | 0.093 | 0.28 | 0.044 |
+| 12000 | ~0.085 | 0.085 | 0.353 | 0.056 |
+| 16000 | ~0.082 | 0.080 | 0.409 | 0.065 |
+| 20000 | 0.082 | **0.078** | **0.41** | 0.067 |
+
+**Acceptance met:** the loss curve tracks Config A's (converges to ~0.08, B
+marginally lower), and **γ/β are decisively non-collapsed** — |γ| grew from its
+zero-init to ~0.41 (β to ~0.067), i.e. the FiLM module is strongly active, not a
+silent no-op. The architecture is correctly wired and the modulation is being used.
+
+## Phase 5 — A vs B head-to-head (frozen 61-label set) — decision: **carry A** 
+
+Identical protocol to Phase 2 (`phase5_compare.py`): same 61 frozen labels, same
+EasyOCR, same per-index degradation. Only the architecture differs.
+
+| Condition | CER mean | std | min | max | params / size |
+|---|---|---|---|---|---|
+| raw | 0.536 | 0.370 | 0.00 | 1.00 | — |
+| RT-Focuser (generic deblurrer) | 0.455 | 0.373 | 0.00 | 1.00 | 5.85 M / 23.7 MB |
+| **R_θ Config A** | **0.462** | 0.353 | 0.00 | 1.00 | **0.44 M / 1.92 MB** |
+| R_θ Config B (FiLM) | 0.498 | 0.381 | 0.00 | 1.00 | 0.51 M / 2.45 MB |
+| oracle (sharp) | 0.034 | 0.047 | 0.00 | 0.17 | — |
+
+**Decision.** Config B's CER (0.498) is **higher** than Config A's (0.462): Δ = −0.036,
+which is *within* one standard error (0.045) — so B is statistically tied-to-slightly-
+worse, and unambiguously **not** the improvement the gate required. Per the plan,
+**the architecture change alone did not improve CER at Stage-1 scale, so Config A is
+carried forward** to Stage 2. Config B is shelved, not deleted (checkpoint kept).
+
+**Why B didn't help (and what it implies).** The FiLM signal is only as useful as the
+recognizer producing it, and at Stage 1 that recognizer is `TinyCRNN` — **frozen but
+randomly initialised, with no real reading ability**. So the conditioning is a random
+projection of input features, not an informative "what's hard to read here" signal.
+The extra capacity let B fit the *training* set marginally better (loss 0.078 < 0.082)
+while generalising slightly worse on held-out — textbook mild over-parameterisation
+with an uninformative conditioning input. This does **not** refute recognition-guided
+modulation; it localises the precondition: **FiLM needs a recognizer that can actually
+read.** That is exactly the Stage-2 setup (real frozen TrOCR providing the gradient),
+which is where recognition-guided conditioning is the natural thing to re-test — now
+as a hypothesis with a concrete, motivated mechanism rather than a random signal.
+
+**Note on the RT-Focuser comparison.** On this rigorous frozen set, the deployable
+(identity-preserving) R_θ-A (0.462) and RT-Focuser (0.455) are **statistically tied**
+— R_θ's advantage here is **13× fewer params / 12× smaller on disk at equal CER, plus
+not destroying sharp real photos** (Phase 1), rather than the CER win reported in the
+top headline. That headline (0.263 vs 0.338) is from the *pre-Phase-1* aggressive
+checkpoint on the older, smaller synthetic set; **the frozen-61 numbers here supersede
+it for the deployable model.** The honest Stage-1 story: R_θ-A matches a 13× larger
+generic deblurrer on readability while staying mobile-sized and safe on sharp inputs —
+and Stage-2 label-free VizWiz adaptation is where a real readability *win* is expected.
+
 ## Artifacts
 
-- `checkpoints/r_theta_w48_stage1.pth` — trained weights (1.79 MB)
+- `checkpoints/r_theta_w48_stage1.pth` — **Config A, carried forward** (1.79 MB)
 - `checkpoints/r_theta_w48.onnx` — self-contained ONNX, 1.92 MB, ready to drop into
   the browser demo's `models/` as a replacement for `rt_focuser.onnx`.
+- `checkpoints/r_theta_w48_stage1_configB.pth` — Config B / FiLM (2.45 MB, bundles the
+  frozen recognizer). **Shelved** after Phase 5 (no Stage-1 gain); kept for the
+  Stage-2 re-test with a real recognizer.
+- `checkpoints/r_theta_w48_stage1_noident.pth` — pre-Phase-1 (no identity samples);
+  kept as the Phase-1 ablation (restorer destroys sharp inputs without it).
