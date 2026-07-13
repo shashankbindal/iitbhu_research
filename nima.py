@@ -17,7 +17,7 @@ Purpose: give unrolled.py's DegradationEstimator an EXPLICIT, well-conditioned
 "how degraded is this image" signal. Diagnosed failure this fixes: the
 gate/kernel-shape had to discover blur severity implicitly from a noisy
 pixel+kernel loss and got stuck in an under-differentiated equilibrium (see
-RESULTS.md / PROGRESS_RTFOCUSER_TO_UNROLLED.md, "genuine plateau" finding).
+RESULTS.md, Phase 6, "genuine plateau" finding).
 """
 
 import torch

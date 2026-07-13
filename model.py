@@ -1,7 +1,7 @@
 """
 R_theta — the lightweight restoration network.
 
-Design goals (from PROPOSAL.md):
+Design goals:
   * mobile budget: target a few M params, ONNX-exportable, no exotic ops
   * residual learning: output = clamp(x + f(x)), so an untrained net starts at
     identity (it can't make the image *worse* before it learns anything)

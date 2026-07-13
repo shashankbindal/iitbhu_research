@@ -1,6 +1,7 @@
 """
 Stage-2 label-free losses — train R_theta on real degraded images with NO clean
-ground-truth target. This is the core novelty (see PROPOSAL.md sec 4.2).
+ground-truth target. This is the project's core novelty: supervision comes only
+from a frozen recognizer's confidence, weak text labels, and self-consistency.
 
 Four terms:
   L_conf    : frozen recognizer should read the restored crop confidently

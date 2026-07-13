@@ -210,6 +210,134 @@ it for the deployable model.** The honest Stage-1 story: R_θ-A matches a 13× l
 generic deblurrer on readability while staying mobile-sized and safe on sharp inputs —
 and Stage-2 label-free VizWiz adaptation is where a real readability *win* is expected.
 
+## Phase 6 — Physics-derived unrolled restorer (a third architecture)
+
+Config B's FiLM tweak was still "architecture engineering on top of a black-box
+U-Net." The professor's bar requires **mathematical novelty**, not an
+architecture variant. Decision: replace the U-Net entirely with a **derived,
+unrolled MAP-estimation network** (`unrolled.py`) — every block has a
+closed-form mathematical meaning, not just learned layers.
+
+### The model
+
+Observation model: `y = α·(k * x) + β + n`. MAP restoration unrolls
+half-quadratic splitting (HQS) into T=4 stages, alternating:
+
+- **Data step** — exact closed-form Wiener deconvolution in the Fourier domain,
+  **zero learned parameters**.
+- **Prior step** — a tiny shared proximal-denoiser CNN (the only learned part
+  besides the kernel estimator).
+
+The unknown blur kernel `k` is predicted per-image, constrained to the
+probability simplex (softmax, mixed with a delta via a learned gate) — **provably
+a pure blur** (non-negative, sums to 1), never a sharpening or hallucination
+operator. This gives two guarantees by construction: identity output for a
+delta kernel, and identity-at-init (gate starts at −4 ⇒ mostly delta; denoiser
+zero-init). Budget: ~0.08M params (vs 0.44M U-Net, 5.85M RT-Focuser). All claims
+backed by runnable self-tests (shape, identity-at-init, Wiener correctness on a
+known kernel, simplex validity, gradient flow through every component).
+
+### v1 — no supervision: worse than doing nothing
+
+Trained 20k iterations (survived two silent background-process deaths, most
+likely laptop sleep — recovered via a `--resume` flag added to
+`train_stage1.py` that reloads the checkpoint's saved iter count).
+
+| Condition | CER mean | std | params / size |
+|---|---|---|---|
+| raw | 0.536 | 0.370 | — |
+| RT-Focuser | 0.455 | 0.373 | 5.85 M |
+| R_θ Config A | 0.462 | 0.353 | 0.44 M |
+| R_θ Config B | 0.498 | 0.381 | 0.51 M |
+| **Unrolled (v1)** | **0.553** | 0.397 | **0.08 M** |
+| oracle (sharp) | 0.034 | 0.047 | — |
+
+**Diagnosis (verified via `diag_unrolled.py`, not guessed):** on sharp inputs
+the model is correctly near-identity (guarantee holds). On **severely blurred**
+inputs, the estimated kernel's centre-tap mass stayed at 0.94–0.96 — almost the
+same "barely blurred" kernel it uses on sharp images. **Mechanism:** Wiener
+deconvolution is ill-conditioned — dividing by a misestimated kernel's
+frequency response amplifies noise. Under a pixel-loss gradient alone, "stay
+near identity" is a safer local minimum than committing to strong deconvolution
+that risks blowing up on kernel-estimation errors.
+
+### Kernel supervision — partial fix
+
+Since Stage-1 data is synthetic, the **true** blur kernel is known. Added a
+direct auxiliary loss supervising the estimator's predicted kernel against the
+true kernel (`degrade.py`'s `degrade_with_kernel()`, verified byte-identical to
+`degrade()` for existing seeds). Caught two real bugs live via smoke-testing
+before committing GPU time: a shape mismatch silently broadcasting into a
+nonsensical comparison, and `F.l1_loss`'s default reduction making the
+gradient ~625× too weak.
+
+With both fixed, extended smoke tests (300→2500 iters) showed the gate
+escaping its saturated init (centre-mass 0.999 → ~0.90–0.92) but then
+**plateauing** for 1000+ further iterations — the gate (a scalar "how much to
+deviate") learned to open partway, but the kernel **shape** itself (a raw
+625-way softmax) settled into a "safe average" response rather than
+differentiating per image.
+
+### v2 — NIMA-style quality assessment + encoder warm-start (professor's suggestion)
+
+Professor suggested a NIMA-style (Talebi & Milanfar 2018) quality-assessment
+signal to differentiate sharp vs. blurred images. Implemented as an explicit
+auxiliary signal feeding the kernel estimator (`nima.py`: distributional
+quality head + Earth Mover's Distance loss against a target built from the
+known synthetic degradation severity), not a separate demo-side gate.
+
+**Diagnosed the plateau's root cause empirically:** ran the encoder + quality
+head **in isolation** (`diag_quality_isolated.py`), decoupled from the
+kernel/pixel losses. Trained on the EMD loss alone, it broke out of the same
+collapse around iteration ~1800–2000 and reached correlation 0.7–0.9 with true
+severity by iteration ~4000–6000 — **proving the encoder architecture CAN
+discriminate blur severity.** The plateau was gradient competition (larger-scale
+kernel+pixel losses dominating the shared encoder from iteration 1), not an
+architectural limit.
+
+**Fix:** warm-start the encoder — pretrain encoder+quality_head on the isolated
+EMD loss for 4000 iterations before joint training (`--warmstart_quality`).
+Also wired the quality prediction into the gate as an explicit feature and a
+zero-init deterministic bias (identity-at-init stays exact).
+
+| Metric | v1 (no supervision) | kernel-sup only (plateaued) | **v2 (kernel+quality sup+warmstart)** |
+|---|---|---|---|
+| k_centre (severe blur) | 0.94–0.97 (stuck) | 0.90–0.94 (stuck) | **0.37–0.68 (genuinely varying)** |
+| loss_k (final) | — | ~1.13–1.16 (flat) | **0.76 (still declining)** |
+| loss_q (final) | n/a | stuck ~0.28 | **0.12 (still declining)** |
+| **Frozen-61 CER** | 0.553 | *(not run to 20k)* | **0.544** |
+
+v2 trained cleanly to 20,000 iterations with every training-time signal showing
+genuine, sustained per-image differentiation. But on the frozen-61 eval, CER
+only moved 0.553 → 0.544 (within noise) — still worse than raw and far behind
+Config A / RT-Focuser.
+
+**Why the training win didn't transfer.** The kernel/quality supervision
+targets are built from synthetic degradation parameters (how much blur/noise/
+JPEG/gamma was applied) — a well-posed proxy, but not the real objective (OCR
+readability). The model got substantially better at estimating "how degraded
+is this image," a different objective from "what pixel change makes text
+legible." This also doesn't fix the standing architectural mismatch: JPEG
+compression and gamma darkening are nonlinear degradations no single
+blur-kernel deconvolution step can represent, regardless of kernel accuracy.
+
+**Separately confirmed deployment blocker:** exported to ONNX
+(`export_unrolled_onnx.py`) and tested in a real headless browser against
+`onnxruntime-web` (WASM) — the exact runtime the live demo uses. Controlled
+comparison: RT-Focuser succeeds in the identical harness; the unrolled model's
+`DFT` op (needed for the FFT deconvolution) crashes it. Works in Python
+onnxruntime, unsupported in the browser runtime.
+
+**Verdict.** Two full training cycles of the unrolled/physics architecture (v1,
+v2) both underperform Config A and RT-Focuser on the frozen-61 set — a
+diagnostic-driven negative result, not an under-trained one; v2's training
+dynamics were verified healthy at every stage before committing to the full
+run. **Recommendation: carry Config A (U-Net) forward as the deployable
+backbone** and treat the unrolled architecture's outcome as a documented,
+well-diagnosed negative result rather than continuing to iterate without a plan
+to close the proxy-objective gap between degradation-severity supervision and
+actual readability.
+
 ## Artifacts
 
 - `checkpoints/r_theta_w48_stage1.pth` — **Config A, carried forward** (1.79 MB)
@@ -220,3 +348,5 @@ and Stage-2 label-free VizWiz adaptation is where a real readability *win* is ex
   Stage-2 re-test with a real recognizer.
 - `checkpoints/r_theta_w48_stage1_noident.pth` — pre-Phase-1 (no identity samples);
   kept as the Phase-1 ablation (restorer destroys sharp inputs without it).
+- `checkpoints/r_theta_w48_stage1_unrolled.pth` — Unrolled v2 (kernel+quality
+  supervision, warm-started). **Negative result, documented** — see Phase 6.
