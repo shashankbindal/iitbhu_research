@@ -117,7 +117,10 @@ def train(args):
         print("no init checkpoint — small-random head init")
     print(f"R_theta width={args.width} params={count_params(R)/1e6:.2f}M")
 
-    reblur = ReblurNet().to(device)
+    reblur = ReblurNet(mode=args.reblur_mode).to(device)
+    print(f"reblur operator: {args.reblur_mode}"
+          + ("  (constrained blur-only kernel)" if args.reblur_mode == "kernel"
+             else "  (unconstrained residual CNN — ablation baseline)"))
     rec = get_recognizer(args.recognizer, **({"device": device} if args.recognizer == "trocr" else {}))
     if hasattr(rec, "to"):
         rec.to(device)
@@ -162,6 +165,8 @@ def main():
     p.add_argument("--w_vqa", type=float, default=1.0)
     p.add_argument("--w_reblur", type=float, default=1.0)
     p.add_argument("--w_content", type=float, default=1.0)
+    p.add_argument("--reblur_mode", choices=["kernel", "conv"], default="kernel",
+                   help="kernel = constrained blur-only (proposed); conv = unconstrained (ablation)")
     p.add_argument("--log_every", type=int, default=200)
     p.add_argument("--out", type=str, default="checkpoints")
     p.add_argument("--smoke", action="store_true")

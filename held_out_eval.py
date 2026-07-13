@@ -84,8 +84,8 @@ def build():
 
 
 def load_model(ckpt_path, device):
-    """Load a checkpoint as Config A (RestoreNet) or Config B (RestoreNetConfigB),
-    auto-detected from the presence of FiLM weights in the state dict."""
+    """Load a checkpoint as Config A (RestoreNet), Config B (FiLM), or the
+    unrolled MAP restorer — auto-detected from the state-dict keys."""
     ck = torch.load(ckpt_path, map_location=device)
     width = ck.get("width", 48)
     sd = ck["model"]
@@ -93,6 +93,9 @@ def load_model(ckpt_path, device):
         from model import RestoreNetConfigB
         from recognizer import get_recognizer
         model = RestoreNetConfigB(width, get_recognizer("tinycrnn").to(device)).to(device)
+    elif any(k.startswith("estimator.") for k in sd):
+        from unrolled import UnrolledRestorer
+        model = UnrolledRestorer().to(device)
     else:
         model = RestoreNet(width).to(device)
     model.load_state_dict(sd)

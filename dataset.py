@@ -19,7 +19,8 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-from degrade import degrade, DegradeConfig
+from degrade import degrade, degrade_with_kernel, identity_kernel, DegradeConfig
+from nima import severity_to_quality_dist
 
 
 _WORDS = [
@@ -110,12 +111,18 @@ class SyntheticTextPairs(Dataset):
     model destroys real, mostly-sharp photos (see RESULTS.md Phase 1)."""
 
     def __init__(self, length=20000, crop=(64, 256), cfg: DegradeConfig = None,
-                 p_clean=0.4, seed=0):
+                 p_clean=0.4, seed=0, return_kernel=False, ksize=25):
         self.length = length
         self.h, self.w = crop
         self.cfg = cfg or DegradeConfig()
         self.p_clean = p_clean
         self.base_seed = seed
+        # return_kernel: also yield the TRUE composed blur kernel per sample —
+        # only meaningful for synthetic data (Stage-1); used to directly
+        # supervise unrolled.py's kernel estimator (see RESULTS.md, unrolled
+        # model's under-corrective failure mode).
+        self.return_kernel = return_kernel
+        self.ksize = ksize
 
     def __len__(self):
         return self.length
@@ -124,13 +131,30 @@ class SyntheticTextPairs(Dataset):
         rng = np.random.default_rng(self.base_seed + idx)
         sharp = _render_line(rng, self.w, self.h)
         r = rng.random()
+        if not self.return_kernel:
+            if r < self.p_clean * 0.5:
+                deg = sharp.copy()                                          # exact identity
+            elif r < self.p_clean:
+                deg = degrade(sharp, MILD_CFG, seed=int(rng.integers(0, 1_000_000)))   # mild
+            else:
+                deg = degrade(sharp, self.cfg, seed=int(rng.integers(0, 1_000_000)))   # full
+            return _to_tensor(deg), _to_tensor(sharp)
+
         if r < self.p_clean * 0.5:
-            deg = sharp.copy()                                          # exact identity
+            deg, kernel, severity = sharp.copy(), identity_kernel(self.ksize), {}
         elif r < self.p_clean:
-            deg = degrade(sharp, MILD_CFG, seed=int(rng.integers(0, 1_000_000)))   # mild
+            deg, kernel, severity = degrade_with_kernel(sharp, MILD_CFG, ksize=self.ksize,
+                                                         seed=int(rng.integers(0, 1_000_000)))
         else:
-            deg = degrade(sharp, self.cfg, seed=int(rng.integers(0, 1_000_000)))   # full
-        return _to_tensor(deg), _to_tensor(sharp)
+            deg, kernel, severity = degrade_with_kernel(sharp, self.cfg, ksize=self.ksize,
+                                                         seed=int(rng.integers(0, 1_000_000)))
+        centre = kernel[self.ksize // 2, self.ksize // 2]
+        quality = severity_to_quality_dist(kernel_centre_mass=centre,
+                                           noise_sev=severity.get("noise", 0.0),
+                                           jpeg_sev=severity.get("jpeg", 0.0),
+                                           lowlight_sev=severity.get("lowlight", 0.0))
+        return (_to_tensor(deg), _to_tensor(sharp), torch.from_numpy(kernel),
+                torch.from_numpy(quality))
 
 
 if __name__ == "__main__":

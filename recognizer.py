@@ -131,7 +131,18 @@ class TrOCRRecognizer(Recognizer):
         # use_fast=False avoids the tiktoken conversion bug seen on some versions
         self.tok = AutoTokenizer.from_pretrained(name, use_fast=False)
         self.device = device
-        self.start_id = self.model.config.decoder.decoder_start_token_id
+        # Newer transformers may leave decoder_start_token_id unset on the nested
+        # decoder config; resolve it (and pad) robustly so both losses work.
+        cfg, dcfg = self.model.config, self.model.config.decoder
+        start = (cfg.decoder_start_token_id
+                 or getattr(dcfg, "decoder_start_token_id", None)
+                 or getattr(dcfg, "bos_token_id", None)
+                 or self.tok.cls_token_id or self.tok.bos_token_id or 2)
+        pad = (cfg.pad_token_id or getattr(dcfg, "pad_token_id", None)
+               or self.tok.pad_token_id or 1)
+        cfg.decoder_start_token_id = dcfg.decoder_start_token_id = start
+        cfg.pad_token_id = pad
+        self.start_id = start
         self._mean = torch.tensor(self.MEAN, device=device).view(1, 3, 1, 1)
         self._std = torch.tensor(self.STD, device=device).view(1, 3, 1, 1)
 

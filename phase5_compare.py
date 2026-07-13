@@ -26,6 +26,7 @@ from metrics import cer
 RTF_ONNX = "../models/rt_focuser.onnx"
 CKPT_A = "checkpoints/r_theta_w48_stage1.pth"
 CKPT_B = "checkpoints/r_theta_w48_stage1_configB.pth"
+CKPT_U = "checkpoints/r_theta_w48_stage1_unrolled.pth"
 ONNX_A = "checkpoints/r_theta_w48.onnx"
 
 
@@ -60,8 +61,12 @@ def main():
     conditions += [
         ("R_theta Config A", restore_a),
         ("R_theta Config B", restore_b),
-        ("oracle (sharp)", None),         # special-cased: OCR the sharp image
     ]
+    if os.path.exists(CKPT_U):
+        model_u = load_model(CKPT_U, device)
+        conditions.append(("Unrolled (ours)", make_restore_fn(model_u, device)))
+        extra_u = f"{trainable_M(model_u):.2f} M / {mb(CKPT_U):.2f} MB ckpt"
+    conditions.append(("oracle (sharp)", None))   # special-cased: OCR the sharp image
 
     # Pre-read OCR per condition over the whole frozen set.
     results = {name: [] for name, _ in conditions}
@@ -77,6 +82,8 @@ def main():
     }
     if os.path.exists(RTF_ONNX):
         extra["RT-Focuser"] = f"5.85 M / {mb(RTF_ONNX):.2f} MB"
+    if os.path.exists(CKPT_U):
+        extra["Unrolled (ours)"] = extra_u
 
     print(f"\nFrozen held-out set: {len(items)} labels   OCR: EasyOCR\n")
     hdr = f"{'Condition':<20} {'CER mean':>9} {'std':>6} {'min':>5} {'max':>5}  {'params / size':<28}"
@@ -85,22 +92,24 @@ def main():
         m, s, lo, hi = stats(results[name])
         print(f"{name:<20} {m:>9.3f} {s:>6.3f} {lo:>5.2f} {hi:>5.2f}  {extra.get(name, ''):<28}")
 
-    # Decision gate (vs Phase-2 per-sample std as the noise floor).
+    # Decision gate (vs the U-Net baseline; per-sample std as the noise floor).
     a_mean = np.mean(results["R_theta Config A"])
-    b_mean = np.mean(results["R_theta Config B"])
     a_std = np.std(results["R_theta Config A"])
-    delta = a_mean - b_mean               # positive => B better (lower CER)
     se = a_std / np.sqrt(len(items))
-    print("\n--- Decision ---")
-    print(f"Config A CER = {a_mean:.3f},  Config B CER = {b_mean:.3f}")
-    print(f"delta (A - B) = {delta:+.3f}   (per-sample std {a_std:.3f}, SE {se:.3f})")
-    if delta > se:
-        print(f"=> Config B is LOWER by >1 SE ({delta:+.3f} > {se:.3f}): carry B to Stage 2.")
-    elif delta > 0:
-        print(f"=> Config B lower but within noise ({delta:+.3f} <= 1 SE {se:.3f}): NOT decisive.")
-    else:
-        print(f"=> Config B NOT better ({delta:+.3f}): architecture change alone did not "
-              f"improve CER at Stage-1 scale; carry A forward.")
+    print("\n--- Decision (challenger vs Config A baseline) ---")
+    print(f"Config A CER = {a_mean:.3f}   (per-sample std {a_std:.3f}, SE {se:.3f})")
+    for challenger in ("R_theta Config B", "Unrolled (ours)"):
+        if challenger not in results:
+            continue
+        c_mean = np.mean(results[challenger])
+        delta = a_mean - c_mean           # positive => challenger better (lower CER)
+        if delta > se:
+            verdict = f"LOWER by >1 SE: genuine improvement"
+        elif delta > 0:
+            verdict = "lower but within noise: NOT decisive"
+        else:
+            verdict = "NOT better than the U-Net baseline"
+        print(f"{challenger:<18} CER = {c_mean:.3f}   delta = {delta:+.3f}  => {verdict}")
 
 
 if __name__ == "__main__":

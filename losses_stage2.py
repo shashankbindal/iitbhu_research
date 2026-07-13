@@ -24,18 +24,57 @@ import torch.nn.functional as F
 
 
 class ReblurNet(nn.Module):
-    """Small CNN that re-applies blur. Trained jointly with R_theta; only used by
-    the L_reblur consistency term, discarded at inference."""
-    def __init__(self, ch=24):
+    """Re-applies blur to the restored image. Trained jointly with R_theta; used
+    only by the L_reblur consistency term and discarded at inference.
+
+    Two modes (the Stage-2 ablation axis):
+
+      mode="kernel"  (constrained — the proposed operator): a small encoder predicts
+        a per-image K×K kernel passed through a softmax, so its weights are
+        NON-NEGATIVE and SUM TO 1. Such a kernel is a weighted average — it can only
+        *blur*, never sharpen or add energy. L_reblur therefore genuinely tests
+        "there exists a blur that turns the restoration back into the observation",
+        which is a real physical anchor against hallucination.
+
+      mode="conv"  (unconstrained baseline for the ablation): the original residual
+        CNN. It can represent sharpening/arbitrary maps, so it can satisfy L_reblur
+        even for a bad restoration — i.e. the anchor is weak. Included to *show* the
+        constraint matters.
+    """
+    def __init__(self, ch=24, mode="kernel", ksize=9):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(3, ch, 3, padding=1), nn.GELU(),
-            nn.Conv2d(ch, ch, 3, padding=1), nn.GELU(),
-            nn.Conv2d(ch, 3, 3, padding=1),
-        )
+        self.mode = mode
+        if mode == "conv":
+            self.net = nn.Sequential(
+                nn.Conv2d(3, ch, 3, padding=1), nn.GELU(),
+                nn.Conv2d(ch, ch, 3, padding=1), nn.GELU(),
+                nn.Conv2d(ch, 3, 3, padding=1),
+            )
+        elif mode == "kernel":
+            self.ksize = ksize
+            self.enc = nn.Sequential(
+                nn.Conv2d(3, ch, 3, stride=2, padding=1), nn.GELU(),
+                nn.Conv2d(ch, ch, 3, stride=2, padding=1), nn.GELU(),
+                nn.AdaptiveAvgPool2d(1),
+            )
+            self.to_kernel = nn.Conv2d(ch, ksize * ksize, 1)
+        else:
+            raise ValueError(f"unknown ReblurNet mode {mode!r}")
 
     def forward(self, restored):
-        return torch.clamp(restored + self.net(restored), 0.0, 1.0)
+        if self.mode == "conv":
+            return torch.clamp(restored + self.net(restored), 0.0, 1.0)
+        # kernel mode — softmax => non-negative, sums to 1 => strictly a blur
+        b, c, h, w = restored.shape
+        feat = self.enc(restored)                                  # (B, ch, 1, 1)
+        k = self.to_kernel(feat).view(b, self.ksize * self.ksize)
+        k = F.softmax(k, dim=1).view(b, 1, self.ksize, self.ksize)  # (B,1,K,K)
+        pad = self.ksize // 2
+        x = restored.reshape(1, b * c, h, w)                        # groups over B*C
+        kk = k.repeat(1, c, 1, 1).reshape(b * c, 1, self.ksize, self.ksize)
+        x = F.pad(x, (pad, pad, pad, pad), mode="reflect")
+        out = F.conv2d(x, kk, groups=b * c)
+        return out.reshape(b, c, h, w)
 
 
 def content_loss(restored, degraded, factor=8):
